@@ -2111,6 +2111,10 @@ case 'new-task': {
     title: taskTitle
   });
 
+  if (created) {
+  window.refreshManagementPanels();
+}
+
   result = created
     ? {
         message: 'Task created',
@@ -2183,6 +2187,7 @@ case 'task-status': {
   task.status = newStatus;
 
   updateTaskTimestamp(task);
+  window.refreshManagementPanels();
 
   result = {
     message: 'Task status updated',
@@ -2217,6 +2222,7 @@ case 'task-progress': {
   task.progress = progress;
 
   updateTaskTimestamp(task);
+  window.refreshManagementPanels();
 
   result = {
     message: 'Task progress updated',
@@ -2259,6 +2265,7 @@ case 'task-priority': {
   task.priority = priority;
 
   updateTaskTimestamp(task);
+  window.refreshManagementPanels();
 
   result = {
     message: 'Task priority updated',
@@ -3129,14 +3136,6 @@ function registerTask(task) {
   saveTaskRegistry();
 
   return true;
-}
-
-function updateTaskTimestamp(task) {
-  if (!task) return;
-
-  task.updated = Date.now();
-
-  saveTaskRegistry();
 }
 
 function updateTaskTimestamp(task) {
@@ -9197,36 +9196,6 @@ window.mountTaskDashboardPanel = function mountTaskDashboardPanel() {
   window.renderTaskDashboard();
 };
 
-function mountTaskDashboardPanel() {
-  const existingCard = document.getElementById('taskDashboardCard');
-
-  if (existingCard) {
-    window.renderProjectDashboard();
-    return;
-  }
-
-  const projectDashboardCard =
-    document.getElementById('projectDashboardCard');
-
-  if (!projectDashboardCard) return;
-
-  const taskDashboardCard = document.createElement('div');
-  taskDashboardCard.id = 'taskDashboardCard';
-  taskDashboardCard.className = 'module-card';
-
-  taskDashboardCard.innerHTML = `
-    <div class="module-header">TASK DASHBOARD</div>
-    <div id="taskDashboardPanel" class="project-dashboard-panel"></div>
-  `;
-
-  projectDashboardCard.insertAdjacentElement(
-    'afterend',
-    taskDashboardCard
-  );
-
-  window.renderProjectDashboard();
-}
-
 window.mountProjectRegistryPanel = function mountProjectRegistryPanel() {
   if (
     document.getElementById('projectDashboardCard') &&
@@ -9268,8 +9237,26 @@ window.mountProjectRegistryPanel = function mountProjectRegistryPanel() {
   );
 
   saveProjectRegistry();
-  renderProjectDashboard();
-  renderProjectRegistry();
+  window.refreshManagementPanels();
+};
+
+function mountManagementPanels() {
+  window.mountProjectRegistryPanel();
+  window.mountTaskDashboardPanel();
+}
+
+window.refreshManagementPanels = function refreshManagementPanels() {
+  if (typeof window.renderProjectDashboard === 'function') {
+    window.renderProjectDashboard();
+  }
+
+  if (typeof window.renderTaskDashboard === 'function') {
+    window.renderTaskDashboard();
+  }
+
+  if (typeof window.renderProjectRegistry === 'function') {
+    window.renderProjectRegistry();
+  }
 };
 
 function boot() {
@@ -9284,10 +9271,13 @@ function boot() {
   }
 
   renderMorningUpgrade();
-  window.mountProjectRegistryPanel();
 
-  if (renderTimer) clearInterval(renderTimer);
-  renderTimer = setInterval(renderMorningUpgrade, 2000);
+setTimeout(function () {
+  mountManagementPanels();
+}, 600);
+
+if (renderTimer) clearInterval(renderTimer);
+renderTimer = setInterval(renderMorningUpgrade, 2000);
 }
 
 if (document.readyState === 'loading') {
@@ -9296,13 +9286,8 @@ if (document.readyState === 'loading') {
   boot();
 }
 
-// Delay Project Registry mount until Command Center UI is fully rendered
-setTimeout(function () {
-window.mountProjectRegistryPanel();
-}, 500);
-setTimeout(window.mountTaskDashboardPanel, 600);
-
 })();
+
 </script>
 
 <!-- ============================================================
@@ -16647,12 +16632,17 @@ window.BIA_OS_BASELINE = BIA_OS.name + ' v' + BIA_OS.version + ' - ' + BIA_OS.co
 developerConsoleHistory =
   developerConsoleHistory.slice(0, 25);
 
-output.textContent =
-  typeof result === 'string'
-    ? result.trim()
-    : JSON.stringify(result, null, 2);
-    
-output.scrollTop = 0;
+const liveOutput =
+  document.getElementById('systemCommandOutput');
+
+if (liveOutput) {
+  liveOutput.textContent =
+    typeof result === 'string'
+      ? result.trim()
+      : JSON.stringify(result, null, 2);
+
+  liveOutput.scrollTop = 0;
+}
 
   setTimeout(bootSystemCommandConsole, 250);
   setTimeout(bootSystemCommandConsole, 1000);
