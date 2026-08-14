@@ -1762,6 +1762,81 @@
     <div id="columnsArea"></div>
   </div>
 
+  <script id="biaSharedUtils">
+// ============================================================
+// BIA-OS SHARED UTILITIES
+// Single source of truth for the helpers every patch block needs.
+// Exposed as window.BIAShared so later <script> blocks delegate here
+// instead of redefining their own copies.
+// ============================================================
+
+(function () {
+  var Shared = window.BIAShared || (window.BIAShared = {});
+
+  Shared.byId = function (id) {
+    return document.getElementById(id);
+  };
+
+  Shared.escapeHtml = function (value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  };
+
+  Shared.readJson = function (key, fallback) {
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      var parsed = JSON.parse(raw);
+      return parsed == null ? fallback : parsed;
+    } catch (err) {
+      return fallback;
+    }
+  };
+
+  Shared.writeJson = function (key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+  };
+
+  Shared.notify = function (message) {
+    if (typeof window.showNotification === 'function') window.showNotification(message);
+    else console.log(message);
+  };
+
+  Shared.resetProductionState = function () {
+    try {
+      if (typeof productionState === 'object' && productionState) {
+        productionState.topic = '';
+        productionState.niche = '';
+        productionState.script = '';
+        productionState.subtitles = '';
+        productionState.imageSync = '';
+        productionState.capcutTiming = '';
+        productionState.stepTimestamps = {};
+        productionState.lastUpdated = null;
+      }
+    } catch (err) {}
+  };
+
+  Shared.clearGeneratedContent = function () {
+    window.latestGeneratedScript = '';
+    window.generatedSubtitleText = '';
+    window.latestGeneratedSubtitles = '';
+    window.importedVoiceoverText = '';
+    window.importedEpisodeTitle = '';
+  };
+
+  Shared.onReady = function (fn) {
+    if (typeof fn !== 'function') return;
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn);
+    else fn();
+  };
+})();
+</script>
+
   <script>
 
 // ============================================================
@@ -3853,9 +3928,7 @@ function updateProductionState(key, value) {
     }
 
     function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+      return window.BIAShared.escapeHtml(text);
     }
 
     function showNotification(message) {
@@ -7249,12 +7322,7 @@ window.testJohnny = 'loaded';
 // ============================================================
 (function () {
   function escapeBiaHtml(value) {
-    return String(value || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function getBiaState() {
@@ -7740,11 +7808,7 @@ document.addEventListener('keydown', function (event) {
   }, true);
 
   installCleanConsoleStyles();
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { window.renderControlPanel(); });
-  } else {
-    window.renderControlPanel();
-  }
+  window.BIAShared.onReady(function () { window.renderControlPanel(); });
 })();
 
 </script>
@@ -7753,20 +7817,14 @@ document.addEventListener('keydown', function (event) {
 (function () {
   'use strict';
 
-  function $(id) { return document.getElementById(id); }
+  function $(id) { return window.BIAShared.byId(id); }
 
   function escapeHtml(value) {
-    return String(value || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function notify(message) {
-    if (typeof window.showNotification === 'function') window.showNotification(message);
-    else console.log(message);
+    window.BIAShared.notify(message);
   }
 
   function setProcess(label) {
@@ -8041,20 +8099,14 @@ document.addEventListener('keydown', function (event) {
 (function () {
   'use strict';
 
-  function byId(id) { return document.getElementById(id); }
+  function byId(id) { return window.BIAShared.byId(id); }
 
   function htmlEscape(value) {
-    return String(value || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function notify(message) {
-    if (typeof window.showNotification === 'function') window.showNotification(message);
-    else console.log(message);
+    window.BIAShared.notify(message);
   }
 
   function setProcess(label) {
@@ -8388,24 +8440,9 @@ document.addEventListener('keydown', function (event) {
     try { localStorage.removeItem('bia-production-state'); } catch (err) {}
     try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) {}
 
-    try {
-      if (typeof productionState === 'object' && productionState) {
-        productionState.topic = '';
-        productionState.niche = '';
-        productionState.script = '';
-        productionState.subtitles = '';
-        productionState.imageSync = '';
-        productionState.capcutTiming = '';
-        productionState.stepTimestamps = {};
-        productionState.lastUpdated = null;
-      }
-    } catch (err) {}
+    window.BIAShared.resetProductionState();
 
-    window.latestGeneratedScript = '';
-    window.generatedSubtitleText = '';
-    window.latestGeneratedSubtitles = '';
-    window.importedVoiceoverText = '';
-    window.importedEpisodeTitle = '';
+    window.BIAShared.clearGeneratedContent();
 
     var ids = ['consoleTopic','consoleNiche','topic','niche','scriptInput','ttsScript','consoleOutput'];
     ids.forEach(function (id) {
@@ -8650,26 +8687,18 @@ document.addEventListener('keydown', function (event) {
   var queueWorkerActive = false;
   var renderTimer = null;
 
-  function $(id) { return document.getElementById(id); }
+  function $(id) { return window.BIAShared.byId(id); }
 
   function safeJson(key, fallback) {
-    try {
-      var raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      var parsed = JSON.parse(raw);
-      return parsed == null ? fallback : parsed;
-    } catch (err) {
-      return fallback;
-    }
+    return window.BIAShared.readJson(key, fallback);
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    window.BIAShared.writeJson(key, value);
   }
 
   function notify(message) {
-    if (typeof window.showNotification === 'function') window.showNotification(message);
-    else console.log(message);
+    window.BIAShared.notify(message);
   }
 
   function formatDuration(ms) {
@@ -8682,12 +8711,7 @@ document.addEventListener('keydown', function (event) {
   }
 
   function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function getHistory() {
@@ -9280,11 +9304,7 @@ if (renderTimer) clearInterval(renderTimer);
 renderTimer = setInterval(renderMorningUpgrade, 2000);
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', boot);
-} else {
-  boot();
-}
+window.BIAShared.onReady(boot);
 
 })();
 
@@ -9302,35 +9322,22 @@ if (document.readyState === 'loading') {
   var QUEUE_RUNNING_KEY = 'bia_auto_queue_running_v1';
   var reportWatchTimer = null;
 
-  function byId(id) { return document.getElementById(id); }
+  function byId(id) { return window.BIAShared.byId(id); }
 
   function safeJson(key, fallback) {
-    try {
-      var raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      var parsed = JSON.parse(raw);
-      return parsed == null ? fallback : parsed;
-    } catch (err) {
-      return fallback;
-    }
+    return window.BIAShared.readJson(key, fallback);
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    window.BIAShared.writeJson(key, value);
   }
 
   function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function notify(message) {
-    if (typeof window.showNotification === 'function') window.showNotification(message);
-    else console.log(message);
+    window.BIAShared.notify(message);
   }
 
   function readProductionState() {
@@ -9421,24 +9428,9 @@ if (document.readyState === 'loading') {
     try { localStorage.removeItem('bia-production-state'); } catch (err) {}
     try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) {}
 
-    try {
-      if (typeof productionState === 'object' && productionState) {
-        productionState.topic = '';
-        productionState.niche = '';
-        productionState.script = '';
-        productionState.subtitles = '';
-        productionState.imageSync = '';
-        productionState.capcutTiming = '';
-        productionState.stepTimestamps = {};
-        productionState.lastUpdated = null;
-      }
-    } catch (err) {}
+    window.BIAShared.resetProductionState();
 
-    window.latestGeneratedScript = '';
-    window.generatedSubtitleText = '';
-    window.latestGeneratedSubtitles = '';
-    window.importedVoiceoverText = '';
-    window.importedEpisodeTitle = '';
+    window.BIAShared.clearGeneratedContent();
 
     var scriptInput = byId('scriptInput');
     if (scriptInput) scriptInput.value = '';
@@ -9619,35 +9611,22 @@ if (document.readyState === 'loading') {
   var QUEUE_RUNNING_KEY = 'bia_auto_queue_running_v1';
   var HEALTH_TIMER = null;
 
-  function byId(id) { return document.getElementById(id); }
+  function byId(id) { return window.BIAShared.byId(id); }
 
   function safeJson(key, fallback) {
-    try {
-      var raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      var parsed = JSON.parse(raw);
-      return parsed == null ? fallback : parsed;
-    } catch (err) {
-      return fallback;
-    }
+    return window.BIAShared.readJson(key, fallback);
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    window.BIAShared.writeJson(key, value);
   }
 
   function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function notify(message) {
-    if (typeof window.showNotification === 'function') window.showNotification(message);
-    else console.log(message);
+    window.BIAShared.notify(message);
   }
 
   function formatDuration(ms) {
@@ -9900,11 +9879,7 @@ if (document.readyState === 'loading') {
     HEALTH_TIMER = setInterval(renderHealth, 2000);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
+  window.BIAShared.onReady(boot);
 })();
 </script>
 
@@ -9966,11 +9941,7 @@ if (document.readyState === 'loading') {
     setTimeout(hideLegacyOpsPanels, 1000);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootLayoutPolish);
-  } else {
-    bootLayoutPolish();
-  }
+  window.BIAShared.onReady(bootLayoutPolish);
 })();
 </script>
 
@@ -9987,35 +9958,22 @@ if (document.readyState === 'loading') {
   var QUEUE_RUNNING_KEY = 'bia_auto_queue_running_v1';
   var queueWorkerActive = false;
 
-  function byId(id) { return document.getElementById(id); }
+  function byId(id) { return window.BIAShared.byId(id); }
 
   function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function safeJson(key, fallback) {
-    try {
-      var raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      var parsed = JSON.parse(raw);
-      return parsed == null ? fallback : parsed;
-    } catch (err) {
-      return fallback;
-    }
+    return window.BIAShared.readJson(key, fallback);
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    window.BIAShared.writeJson(key, value);
   }
 
   function notify(message) {
-    if (typeof window.showNotification === 'function') window.showNotification(message);
-    else console.log(message);
+    window.BIAShared.notify(message);
   }
 
   function getQueue() {
@@ -11241,13 +11199,9 @@ pre.production-output {
     window.renderControlPanel = wrappedRender;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      setTimeout(enhanceFixedOpsRail, 0);
-    });
-  } else {
+  window.BIAShared.onReady(function () {
     setTimeout(enhanceFixedOpsRail, 0);
-  }
+  });
 })();
 </script>
 
@@ -11437,13 +11391,9 @@ pre.production-output {
     window.renderControlPanel = wrapped;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      setTimeout(installHistoryClearButton, 0);
-    });
-  } else {
+  window.BIAShared.onReady(function () {
     setTimeout(installHistoryClearButton, 0);
-  }
+  });
 })();
 </script>
 
@@ -11673,13 +11623,9 @@ pre.production-output {
     window.renderControlPanel = wrappedRender;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      setTimeout(applyRailZoning, 0);
-    });
-  } else {
+  window.BIAShared.onReady(function () {
     setTimeout(applyRailZoning, 0);
-  }
+  });
 })();
 </script>
 
@@ -11979,15 +11925,10 @@ pre.production-output {
     window.renderControlPanel = wrappedRender;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      setTimeout(applyPhase24, 0);
-      setTimeout(applyPhase24, 300);
-    });
-  } else {
+  window.BIAShared.onReady(function () {
     setTimeout(applyPhase24, 0);
     setTimeout(applyPhase24, 300);
-  }
+  });
 })();
 </script>
 
@@ -12599,17 +12540,11 @@ pre.production-output {
     window.renderControlPanel = wrapped;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      setTimeout(updateDockFallback, 0);
-      setTimeout(updateDockFallback, 200);
-      setInterval(updateDockFallback, 1000);
-    });
-  } else {
+  window.BIAShared.onReady(function () {
     setTimeout(updateDockFallback, 0);
     setTimeout(updateDockFallback, 200);
     setInterval(updateDockFallback, 1000);
-  }
+  });
 })();
 </script>
 
@@ -12836,23 +12771,11 @@ pre.production-output {
   var RUNNING_KEY = 'bia_auto_queue_running_v1';
 
   function safeJson(key, fallback) {
-    try {
-      var raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      var parsed = JSON.parse(raw);
-      return parsed == null ? fallback : parsed;
-    } catch (err) {
-      return fallback;
-    }
+    return window.BIAShared.readJson(key, fallback);
   }
 
   function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+    return window.BIAShared.escapeHtml(value);
   }
 
   function getQueue() {
@@ -12928,8 +12851,7 @@ pre.production-output {
     setInterval(ensurePanel, 500);
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  window.BIAShared.onReady(boot);
 })();
 </script>
 
@@ -13121,10 +13043,7 @@ pre.production-output {
   }
 
   function htmlEscape(value) {
-    if (typeof escapeHtml === 'function') return escapeHtml(value);
-    const div = document.createElement('div');
-    div.textContent = value == null ? '' : String(value);
-    return div.innerHTML;
+    return window.BIAShared.escapeHtml(value);
   }
 
   function labelFor(item) {
@@ -13812,18 +13731,11 @@ pre.production-output {
   }
 
   function readJson(key, fallback) {
-    try {
-      var raw = localStorage.getItem(key);
-      if (!raw) return fallback;
-      var parsed = JSON.parse(raw);
-      return parsed == null ? fallback : parsed;
-    } catch (err) {
-      return fallback;
-    }
+    return window.BIAShared.readJson(key, fallback);
   }
 
   function writeJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    window.BIAShared.writeJson(key, value);
   }
 
   function defaultModules(status) {
@@ -13962,18 +13874,7 @@ pre.production-output {
     try { localStorage.removeItem('bia-pipeline-timestamps'); } catch (err) {}
     try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) {}
 
-    try {
-      if (typeof productionState === 'object' && productionState) {
-        productionState.topic = '';
-        productionState.niche = '';
-        productionState.script = '';
-        productionState.subtitles = '';
-        productionState.imageSync = '';
-        productionState.capcutTiming = '';
-        productionState.lastUpdated = null;
-        productionState.stepTimestamps = {};
-      }
-    } catch (err) {}
+    window.BIAShared.resetProductionState();
 
     try {
       if (typeof pipelineTimestamps === 'object' && pipelineTimestamps) {
@@ -13983,11 +13884,7 @@ pre.production-output {
       }
     } catch (err) {}
 
-    window.latestGeneratedScript = '';
-    window.generatedSubtitleText = '';
-    window.latestGeneratedSubtitles = '';
-    window.importedVoiceoverText = '';
-    window.importedEpisodeTitle = '';
+    window.BIAShared.clearGeneratedContent();
   }
 
   function resetInputsAndOutput() {
@@ -14073,15 +13970,10 @@ pre.production-output {
     window.renderControlPanel = wrappedRender;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      setTimeout(refreshV12Controls, 0);
-      setTimeout(refreshV12Controls, 400);
-    });
-  } else {
+  window.BIAShared.onReady(function () {
     setTimeout(refreshV12Controls, 0);
     setTimeout(refreshV12Controls, 400);
-  }
+  });
 })();
 </script>
 
@@ -14756,15 +14648,10 @@ pre.production-output {
     window.renderControlPanel = wrappedRender;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      setTimeout(applyShellClass, 0);
-      /* Pass 6: disabled continuous legacy updateCluster interval to stop telemetry flicker. */
-    });
-  } else {
+  window.BIAShared.onReady(function () {
     setTimeout(applyShellClass, 0);
     /* Pass 6: disabled continuous legacy updateCluster interval to stop telemetry flicker. */
-  }
+  });
 })();
 </script>
 
@@ -15184,11 +15071,7 @@ pre.production-output {
     }, 2500);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
+  window.BIAShared.onReady(boot);
 })();
 </script>
 
@@ -15283,12 +15166,7 @@ pre.production-output {
   }
 
   function htmlEscape(value) {
-    if (typeof window.escapeHtml === 'function') {
-      try { return window.escapeHtml(value); } catch (err) {}
-    }
-    var div = document.createElement('div');
-    div.textContent = safeText(value);
-    return div.innerHTML;
+    return window.BIAShared.escapeHtml(value);
   }
 
   function renderQueueDockFallback() {
@@ -15550,11 +15428,7 @@ pre.production-output {
     }, 500);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootStableBaseline);
-  } else {
-    bootStableBaseline();
-  }
+  window.BIAShared.onReady(bootStableBaseline);
 
   window.addEventListener('load', bootStableBaseline);
 })();
@@ -16000,11 +15874,7 @@ pre.production-output {
 
   window.biaPass4CleanupDashboardTelemetry = runPass4Cleanup;
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootPass4);
-  } else {
-    bootPass4();
-  }
+  window.BIAShared.onReady(bootPass4);
 
   window.addEventListener('load', bootPass4);
   /* Pass 6: disabled continuous Pass 4 cleanup redraw to stop telemetry flicker. */
@@ -16132,11 +16002,7 @@ pre.production-output {
     /* Pass 6: disabled Pass 5 polling; Pass 6 owns stable telemetry updates. */
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', install);
-  } else {
-    install();
-  }
+  window.BIAShared.onReady(install);
 })();
 </script>
 
@@ -16371,11 +16237,7 @@ pre.production-output {
     setInterval(function () { stableTelemetryUpdate(false); }, 5000);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', install);
-  } else {
-    install();
-  }
+  window.BIAShared.onReady(install);
 })();
 </script>
 
@@ -16597,11 +16459,7 @@ window.BIA_OS_BASELINE = BIA_OS.name + ' v' + BIA_OS.version + ' - ' + BIA_OS.co
 
   window.biaPass7ApplyOwnershipCleanup = applyPass7OwnershipCleanup;
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', install);
-  } else {
-    install();
-  }
+  window.BIAShared.onReady(install);
 
   window.addEventListener('load', install);
 })();
@@ -16700,11 +16558,7 @@ if (liveOutput) {
     setTimeout(injectSystemCommandConsole, 1500);
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootSystemCommandConsole);
-  } else {
-    bootSystemCommandConsole();
-  }
+  window.BIAShared.onReady(bootSystemCommandConsole);
 
   window.addEventListener('load', bootSystemCommandConsole);
   document.addEventListener('click', function (event) {
