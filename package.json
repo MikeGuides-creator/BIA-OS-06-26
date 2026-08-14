@@ -1,0 +1,16 @@
+{
+  "name": "bia-os",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Build It Anyway Operating System - test harness for the single-file HTML application",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run && node scripts/function-coverage-report.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "25.0.1",
+    "vitest": "2.1.9"
+  }
+}
