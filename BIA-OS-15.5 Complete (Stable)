@@ -4,6 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
   <title>Build It Anyway — BIA-OS v0.7 Stabilized</title>
   <style>
     * {
@@ -2645,10 +2646,10 @@ function renderConsoleHistory() {
 
   box.innerHTML = developerConsoleHistory.map(item => `
     <div class="history-item">
-      <strong>${item.command}</strong>
-      <span>${item.status}</span>
-      <small>${new Date(item.timestamp).toLocaleString()}</small>
-      <pre>${item.output || ''}</pre>
+      <strong>${escapeHtml(item.command)}</strong>
+      <span>${escapeHtml(item.status)}</span>
+      <small>${escapeHtml(new Date(item.timestamp).toLocaleString())}</small>
+      <pre>${escapeHtml(item.output || '')}</pre>
     </div>
   `).join('');
 }
@@ -3188,10 +3189,10 @@ function renderProjectRegistry() {
   panel.innerHTML = projectRegistry.map(function (project) {
     return `
       <div style="padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.12);">
-        <strong>${project.name || project.id}</strong>
+        <strong>${escapeHtml(project.name || project.id)}</strong>
         ${createStatusBadge(project.status)}
-        Progress: ${project.progress}%
-        Health: ${project.health}%
+        Progress: ${escapeHtml(project.progress)}%
+        Health: ${escapeHtml(project.health)}%
       </div>
     `;
   }).join('');
@@ -3853,9 +3854,12 @@ function updateProductionState(key, value) {
     }
 
     function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+      return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function showNotification(message) {
@@ -4024,7 +4028,7 @@ function getSystemDocumentation() {
           '<span class="import-stat">📝 ' + extracted.wordCount + ' words</span>' +
           '<span class="import-stat">⏱️ ~' + extracted.estimatedMinutes + ' min</span>' +
           '<span class="import-stat">📋 ' + extracted.sectionCount + ' sections</span>' +
-          '<span class="import-stat">📄 ' + file.name + '</span>';
+          '<span class="import-stat">📄 ' + escapeHtml(file.name) + '</span>';
         document.getElementById('importedVoText').textContent = extracted.voiceover;
         preview.style.display = 'block';
 
@@ -4154,13 +4158,16 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
 
         let html = '<div style="margin-bottom:1rem;"><strong style="color:#4caf50;">✅ Platform Package Ready — Copy & paste into each platform below:</strong></div>';
 
-        platforms.forEach(function (p) {
-          const content = pkg[p.key] || 'Not generated';
-          const escapedContent = content.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+        const packageContents = platforms.map(function (p) {
+          return String(pkg[p.key] || 'Not generated');
+        });
+
+        platforms.forEach(function (p, index) {
+          const content = packageContents[index];
           html += '<div class="platform-package-card">' +
             '<div class="platform-package-header">' +
             '<div class="platform-package-name">' + p.label + '</div>' +
-            '<button class="package-copy-btn" onclick="window.copyToClipboard(\'' + escapedContent + '\')">Copy</button>' +
+            '<button class="package-copy-btn" data-copy-package="' + index + '">Copy</button>' +
             '</div>' +
             '<div class="platform-package-content">' + escapeHtml(content) + '</div>' +
             '</div>';
@@ -4172,10 +4179,18 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
           '</div>';
 
         output.innerHTML = html;
+
+        output.querySelectorAll('[data-copy-package]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            const index = Number(btn.getAttribute('data-copy-package'));
+            window.copyToClipboard(packageContents[index] || '');
+          });
+        });
+
         showNotification('Platform package generated!');
 
       } catch (e) {
-        output.innerHTML = '<div style="color:#ff6b35; padding:1rem;">Error generating package: ' + e.message + '<br><small>Make sure your OpenAI key is saved and try again.</small></div>';
+        output.innerHTML = '<div style="color:#ff6b35; padding:1rem;">Error generating package: ' + escapeHtml(e.message) + '<br><small>Make sure your OpenAI key is saved and try again.</small></div>';
       }
     });
 
@@ -4224,8 +4239,8 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
         output.style.display = 'none';
       }
 
-      if (typeof writeProductionOutput === 'function') {
-        writeProductionOutput('<div class="loading"></div> Calling OpenAI...');
+      if (typeof writeProductionOutputHtml === 'function') {
+        writeProductionOutputHtml('<div class="loading"></div> Calling OpenAI...');
       }
 
       try {
@@ -4238,7 +4253,7 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
         console.log('OPENAI DATA:', data);
         let topics = data.choices[0].message.content.split('\n').filter(function (l) { return l.trim(); }).slice(0, 7);
         const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-        let html = '<strong>Weekly Calendar (' + niche + ')</strong>';
+        let html = '<strong>Weekly Calendar (' + escapeHtml(niche) + ')</strong>';
         for (let i = 0; i < topics.length; i++) {
           const rawTopic = String(topics[i] || '').trim();
           const encodedTopic = encodeURIComponent(rawTopic);
@@ -4248,14 +4263,14 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
           output.style.display = 'none';
         }
 
-        if (typeof writeProductionOutput === 'function') {
-          writeProductionOutput(html);
+        if (typeof writeProductionOutputHtml === 'function') {
+          writeProductionOutputHtml(html);
         }
 
       } catch (e) {
-        const errorMessage = '<div style="color:#ff6b35;">Error: ' + e.message + '</div>';
-        if (typeof writeProductionOutput === 'function') {
-          writeProductionOutput(errorMessage);
+        const errorMessage = '<div style="color:#ff6b35;">Error: ' + escapeHtml(e.message) + '</div>';
+        if (typeof writeProductionOutputHtml === 'function') {
+          writeProductionOutputHtml(errorMessage);
         }
         if (output) {
           output.style.display = 'none';
@@ -4387,7 +4402,7 @@ updateProductionState('topic', topic);
               filenameInput.addEventListener('input', function () { downloadLink.download = filenameInput.value + '.mp3'; });
               downloadLink.download = defaultName + '.mp3';
             } catch (e) {
-              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + e.message + '</div>';
+              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + escapeHtml(e.message) + '</div>';
             }
           });
         } else if (tabId === 'record') {
@@ -4562,7 +4577,7 @@ updateProductionState('topic', topic);
                 });
               });
             } catch (e) {
-              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + e.message + '</div>';
+              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + escapeHtml(e.message) + '</div>';
             }
           });
         } else {
@@ -5701,9 +5716,7 @@ function getCurrentScriptText() {
 }
 
 function formatProductionText(title, body) {
-  return '<pre style="white-space:pre-wrap;margin:0;font-family:inherit;line-height:1.45;">' +
-    escapeHtml([title, '', body].filter(Boolean).join('\n')) +
-    '</pre>';
+  return [title, '', body].filter(Boolean).join('\n');
 }
 
 function runConsoleSubtitles() {
@@ -6795,6 +6808,30 @@ function exportProductionState() {
   }
 }
 
+function sanitizeImportedProductionState(raw) {
+  const clean = {};
+
+  if (!raw || typeof raw !== 'object') return clean;
+
+  ['topic', 'niche', 'script', 'subtitles', 'imageSync', 'capcutTiming'].forEach(function (key) {
+    if (typeof raw[key] === 'string') clean[key] = raw[key];
+  });
+
+  if (typeof raw.lastUpdated === 'string' || typeof raw.lastUpdated === 'number') {
+    clean.lastUpdated = raw.lastUpdated;
+  }
+
+  if (raw.stepTimestamps && typeof raw.stepTimestamps === 'object' && !Array.isArray(raw.stepTimestamps)) {
+    clean.stepTimestamps = {};
+    Object.keys(raw.stepTimestamps).forEach(function (step) {
+      const value = raw.stepTimestamps[step];
+      if (typeof value === 'string' || typeof value === 'number') clean.stepTimestamps[step] = value;
+    });
+  }
+
+  return clean;
+}
+
 function importProductionStateFile(file) {
   if (!file) {
     showNotification('No backup file selected.');
@@ -6807,7 +6844,9 @@ function importProductionStateFile(file) {
     try {
       const parsed = JSON.parse(event.target.result);
 
-      const importedState = parsed.productionState || parsed;
+      const importedState = sanitizeImportedProductionState(
+        parsed.productionState || parsed
+      );
 
       Object.assign(productionState, importedState);
 
@@ -7147,7 +7186,7 @@ no text, no captions, no logos
 
     }
 
-    function writeProductionOutput(content) {
+    function writeProductionOutputHtml(html) {
 
       const output = document.getElementById('productionOutput');
 
@@ -7155,9 +7194,18 @@ no text, no captions, no logos
 
       output.innerHTML = `
     <div class="production-output-content">
-      ${content}
+      ${html}
     </div>
   `;
+    }
+
+    function writeProductionOutput(content) {
+
+      writeProductionOutputHtml(
+        '<pre style="white-space:pre-wrap;margin:0;font-family:inherit;line-height:1.45;">' +
+        escapeHtml(content) +
+        '</pre>'
+      );
     }
 
     // ============================================================
@@ -7562,6 +7610,15 @@ document.addEventListener('keydown', function (event) {
 // Removes the old visible UI and makes Production Output the single screen.
 // ============================================================
 (function () {
+  function escapeCleanConsoleAttr(value) {
+    return String(value == null || value === false ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function installCleanConsoleStyles() {
     if (document.getElementById('cleanConsoleStyles')) return;
     const style = document.createElement('style');
@@ -7661,7 +7718,7 @@ document.addEventListener('keydown', function (event) {
     const today = (typeof getDateOffset === 'function') ? getDateOffset(0) : new Date().toLocaleDateString();
     const moduleCards = (typeof modules === 'object' && modules)
       ? Object.entries(modules).map(function ([key, mod]) {
-          return '<div class="cp-module-card cp-module-' + (mod.status || 'ready') + '"><div class="cp-module-name">' + (mod.name || key) + '</div><div class="cp-module-status">' + String(mod.status || 'ready').toUpperCase() + '</div></div>';
+          return '<div class="cp-module-card cp-module-' + escapeCleanConsoleAttr(mod.status || 'ready') + '"><div class="cp-module-name">' + escapeCleanConsoleAttr(mod.name || key) + '</div><div class="cp-module-status">' + escapeCleanConsoleAttr(String(mod.status || 'ready').toUpperCase()) + '</div></div>';
         }).join('')
       : '';
 
@@ -7689,9 +7746,9 @@ document.addEventListener('keydown', function (event) {
           <div id="activeProcessBanner" class="active-process-banner">SYSTEM IDLE</div>
 
           <div class="clean-console-fields">
-            <input id="consoleNiche" type="text" placeholder="Enter niche..." value="${(productionState && productionState.niche) || ''}">
+            <input id="consoleNiche" type="text" placeholder="Enter niche..." value="${escapeCleanConsoleAttr(productionState && productionState.niche)}">
             <button type="button" data-cp-click="generateTopicsBtn">Generate Topics</button>
-            <input id="consoleTopic" class="full" type="text" placeholder="Selected topic will appear here, or type your own..." value="${(productionState && productionState.topic) || ''}">
+            <input id="consoleTopic" class="full" type="text" placeholder="Selected topic will appear here, or type your own..." value="${escapeCleanConsoleAttr(productionState && productionState.topic)}">
             <button type="button" class="full" data-cp-click="generateBtn">Generate Script</button>
           </div>
 
@@ -13122,9 +13179,12 @@ pre.production-output {
 
   function htmlEscape(value) {
     if (typeof escapeHtml === 'function') return escapeHtml(value);
-    const div = document.createElement('div');
-    div.textContent = value == null ? '' : String(value);
-    return div.innerHTML;
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function labelFor(item) {
@@ -15829,9 +15889,12 @@ pre.production-output {
   'use strict';
 
   function htmlEscape(value) {
-    var div = document.createElement('div');
-    div.textContent = value == null ? '' : String(value);
-    return div.innerHTML;
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function gaugeHtml(label, id) {
