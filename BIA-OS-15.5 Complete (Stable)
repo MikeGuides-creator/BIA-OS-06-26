@@ -5,6 +5,67 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Build It Anyway — BIA-OS v0.7 Stabilized</title>
+
+  <script id="biaErrorReportingCore">
+    /* Central error reporting. Every recovered failure is routed here so nothing
+       disappears without a trace. Repeated failures from the same context are
+       throttled so polling code cannot flood the console. */
+    (function () {
+      var MAX_ENTRIES = 200;
+      var LOG_FIRST = 3;
+      var LOG_EVERY = 25;
+      var counts = {};
+
+      window.biaErrorLog = window.biaErrorLog || [];
+
+      window.biaErrorMessage = function (error) {
+        if (!error) return 'Unknown error';
+        if (typeof error === 'string') return error;
+        return error.message || String(error);
+      };
+
+      window.biaReportError = function (context, error, options) {
+        var settings = options || {};
+
+        try {
+          var name = String(context || 'unknown');
+          counts[name] = (counts[name] || 0) + 1;
+
+          window.biaErrorLog.push({
+            context: name,
+            message: window.biaErrorMessage(error),
+            stack: (error && error.stack) || null,
+            timestamp: new Date().toISOString()
+          });
+
+          if (window.biaErrorLog.length > MAX_ENTRIES) {
+            window.biaErrorLog.splice(0, window.biaErrorLog.length - MAX_ENTRIES);
+          }
+
+          var occurrences = counts[name];
+          if (occurrences <= LOG_FIRST || occurrences % LOG_EVERY === 0) {
+            console.error('[BIA] ' + name + ' failed (x' + occurrences + '):', error);
+          }
+
+          if (settings.notify && typeof window.showNotification === 'function') {
+            window.showNotification(settings.notify);
+          }
+        } catch (reportingError) {
+          console.error('[BIA] error reporting failed:', reportingError, error);
+        }
+
+        return error;
+      };
+
+      window.addEventListener('error', function (event) {
+        window.biaReportError('window.onerror', event.error || event.message);
+      });
+
+      window.addEventListener('unhandledrejection', function (event) {
+        window.biaReportError('unhandledrejection', event.reason);
+      });
+    })();
+  </script>
   <style>
     * {
       margin: 0;
@@ -2602,9 +2663,15 @@ Tracks console history + diagnostics
 
 const DEV_CONSOLE_HISTORY_KEY = 'bia_dev_console_history';
 
-let developerConsoleHistory = JSON.parse(
-  localStorage.getItem(DEV_CONSOLE_HISTORY_KEY) || '[]'
-);
+let developerConsoleHistory = (function () {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DEV_CONSOLE_HISTORY_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    biaReportError('loadDeveloperConsoleHistory', err);
+    return [];
+  }
+})();
 
 function saveDeveloperConsoleHistory() {
   localStorage.setItem(
@@ -3869,21 +3936,73 @@ function updateProductionState(key, value) {
     window.copyToClipboard = function (text) {
       navigator.clipboard.writeText(text).then(function () {
         showNotification('Copied to clipboard!');
-      }).catch(function () {
+      }).catch(function (clipboardError) {
+        biaReportError('copyToClipboard:clipboardApi', clipboardError);
+
         const textarea = document.createElement('textarea');
         textarea.value = text;
         document.body.appendChild(textarea);
         textarea.select();
-        document.execCommand('copy');
+
+        let copied = false;
+        try {
+          copied = document.execCommand('copy');
+        } catch (fallbackError) {
+          biaReportError('copyToClipboard:execCommand', fallbackError);
+        }
+
         document.body.removeChild(textarea);
-        showNotification('Copied to clipboard!');
+        showNotification(copied ? 'Copied to clipboard!' : 'Copy failed. Copy the text manually.');
       });
     };
 
+    /* Single entry point for chat completions so HTTP and payload failures are
+       reported as real errors instead of surfacing as "cannot read property 0". */
+    async function requestOpenAIChat(payload) {
+      if (!openAIKey) throw new Error('No OpenAI API key saved.');
+
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAIKey },
+        body: JSON.stringify(payload)
+      });
+
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (parseError) {
+        biaReportError('requestOpenAIChat:parseResponse', parseError);
+      }
+
+      if (!response.ok) {
+        const apiMessage = data && data.error && data.error.message;
+        throw new Error('OpenAI request failed (' + response.status + '): ' + (apiMessage || response.statusText || 'Unknown error'));
+      }
+
+      const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if (!content) throw new Error('OpenAI returned an empty response.');
+
+      return content;
+    }
+
     function saveAssets() { localStorage.setItem('facelessAssets', JSON.stringify(assets)); }
+
+    /* Corrupt stored JSON used to throw here and abort the rest of startup. */
+    function readStoredJson(key, fallback) {
+      const saved = localStorage.getItem(key);
+      if (!saved) return fallback;
+
+      try {
+        const parsed = JSON.parse(saved);
+        return parsed === null || parsed === undefined ? fallback : parsed;
+      } catch (err) {
+        biaReportError('readStoredJson:' + key, err, { notify: 'Saved data for ' + key + ' was unreadable and has been reset.' });
+        return fallback;
+      }
+    }
+
     function loadAssets() {
-      const saved = localStorage.getItem('facelessAssets');
-      if (saved) assets = JSON.parse(saved);
+      assets = readStoredJson('facelessAssets', assets);
       updateKeyStatus();
     }
     function getSystemInfo() {
@@ -3900,18 +4019,15 @@ function getSystemDocumentation() {
   return DOCUMENTATION;
 }
     function loadTemplates() {
-      const saved = localStorage.getItem('thumbnailTemplates');
-      if (saved) savedTemplates = JSON.parse(saved);
+      savedTemplates = readStoredJson('thumbnailTemplates', savedTemplates);
     }
     function saveTemplates() { localStorage.setItem('thumbnailTemplates', JSON.stringify(savedTemplates)); }
     function saveSchedules() { localStorage.setItem('facelessSchedules', JSON.stringify(schedules)); }
     function loadSchedules() {
-      const saved = localStorage.getItem('facelessSchedules');
-      if (saved) schedules = JSON.parse(saved);
+      schedules = readStoredJson('facelessSchedules', schedules);
     }
     function loadProductionData() {
-      const saved = localStorage.getItem('facelessProduction');
-      if (saved) productionData = JSON.parse(saved);
+      productionData = readStoredJson('facelessProduction', productionData);
     }
     function saveProductionData() { localStorage.setItem('facelessProduction', JSON.stringify(productionData)); }
 
@@ -4126,20 +4242,20 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
   "thumbnail_text": "3-5 word bold thumbnail text that gets clicks"
 }`;
 
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAIKey },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: prompt }],
-            max_tokens: 1200
-          })
+        let rawContent = await requestOpenAIChat({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 1200
         });
 
-        const data = await response.json();
-        let rawContent = data.choices[0].message.content;
         rawContent = rawContent.replace(/```json|```/g, '').trim();
-        const pkg = JSON.parse(rawContent);
+
+        let pkg;
+        try {
+          pkg = JSON.parse(rawContent);
+        } catch (parseError) {
+          throw new Error('OpenAI returned malformed package JSON: ' + parseError.message);
+        }
 
         const platforms = [
           { key: 'youtube_title', label: '▶️ YouTube Title', emoji: '▶️' },
@@ -4175,7 +4291,8 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
         showNotification('Platform package generated!');
 
       } catch (e) {
-        output.innerHTML = '<div style="color:#ff6b35; padding:1rem;">Error generating package: ' + e.message + '<br><small>Make sure your OpenAI key is saved and try again.</small></div>';
+        biaReportError('generatePlatformPackage', e);
+        output.innerHTML = '<div style="color:#ff6b35; padding:1rem;">Error generating package: ' + escapeHtml(e.message) + '<br><small>Make sure your OpenAI key is saved and try again.</small></div>';
       }
     });
 
@@ -4229,14 +4346,8 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
       }
 
       try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAIKey },
-          body: JSON.stringify({ model: 'gpt-3.5-turbo', messages: [{ role: 'user', content: 'Generate 7 video topics for a faceless channel about "' + niche + '". List one per line.' }], max_tokens: 200 })
-        });
-        const data = await response.json();
-        console.log('OPENAI DATA:', data);
-        let topics = data.choices[0].message.content.split('\n').filter(function (l) { return l.trim(); }).slice(0, 7);
+        const content = await requestOpenAIChat({ model: 'gpt-3.5-turbo', messages: [{ role: 'user', content: 'Generate 7 video topics for a faceless channel about "' + niche + '". List one per line.' }], max_tokens: 200 });
+        let topics = content.split('\n').filter(function (l) { return l.trim(); }).slice(0, 7);
         const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
         let html = '<strong>Weekly Calendar (' + niche + ')</strong>';
         for (let i = 0; i < topics.length; i++) {
@@ -4253,7 +4364,8 @@ Generate platform-optimized content in this EXACT JSON format (no markdown, just
         }
 
       } catch (e) {
-        const errorMessage = '<div style="color:#ff6b35;">Error: ' + e.message + '</div>';
+        biaReportError('generateTopics', e);
+        const errorMessage = '<div style="color:#ff6b35;">Error: ' + escapeHtml(e.message) + '</div>';
         if (typeof writeProductionOutput === 'function') {
           writeProductionOutput(errorMessage);
         }
@@ -4387,7 +4499,8 @@ updateProductionState('topic', topic);
               filenameInput.addEventListener('input', function () { downloadLink.download = filenameInput.value + '.mp3'; });
               downloadLink.download = defaultName + '.mp3';
             } catch (e) {
-              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + e.message + '</div>';
+              biaReportError('generateVoiceover', e);
+              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + escapeHtml(e.message) + '</div>';
             }
           });
         } else if (tabId === 'record') {
@@ -4429,7 +4542,8 @@ updateProductionState('topic', topic);
               document.getElementById('stopRecordBtn').disabled = false;
               document.getElementById('recordingStatus').innerHTML = '<span class="recording-active">🔴 RECORDING... Speak now!</span>';
             } catch (error) {
-              document.getElementById('recordingStatus').innerHTML = '<span style="color:#ff6b35;">Microphone access denied</span>';
+              biaReportError('startRecording', error);
+              document.getElementById('recordingStatus').innerHTML = '<span style="color:#ff6b35;">Microphone unavailable: ' + escapeHtml(error.message || 'access denied') + '</span>';
             }
           });
           document.getElementById('stopRecordBtn').addEventListener('click', function () {
@@ -4453,13 +4567,7 @@ updateProductionState('topic', topic);
     // THUMBNAIL STUDIO (original)
     // ============================================================
     async function generateTitles(topic, style) {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAIKey },
-        body: JSON.stringify({ model: 'gpt-3.5-turbo', messages: [{ role: 'user', content: 'Generate 5 YouTube titles for a "' + style + '" video about "' + topic + '". Format each as: "1. Title (CTR: X%)" where X is estimated click-through rate.' }], max_tokens: 300 })
-      });
-      const data = await response.json();
-      return data.choices[0].message.content;
+      return requestOpenAIChat({ model: 'gpt-3.5-turbo', messages: [{ role: 'user', content: 'Generate 5 YouTube titles for a "' + style + '" video about "' + topic + '". Format each as: "1. Title (CTR: X%)" where X is estimated click-through rate.' }], max_tokens: 300 });
     }
 
     function parseTitles(response) {
@@ -4562,7 +4670,8 @@ updateProductionState('topic', topic);
                 });
               });
             } catch (e) {
-              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + e.message + '</div>';
+              biaReportError('generateTitlesUi', e);
+              resultDiv.innerHTML = '<div style="color:#ff6b35;">Error: ' + escapeHtml(e.message) + '</div>';
             }
           });
         } else {
@@ -6995,7 +7104,14 @@ no text, no captions, no logos
           continue;
         }
 
-        const b64 = data.data[0].b64_json;
+        const b64 = data && data.data && data.data[0] && data.data[0].b64_json;
+
+        if (!b64) {
+          biaReportError('generateImagesFromSubtitleText', new Error('Image ' + (i + 1) + ' response contained no image data'));
+          output += 'Image ' + (i + 1) + ' failed: response contained no image data\n\n';
+          continue;
+        }
+
         downloadBase64Image(b64, 'build-it-anyway-image-' + (i + 1) + '.png');
 
         output += 'Image ' + (i + 1) + ' downloaded.\n';
@@ -7260,7 +7376,7 @@ window.testJohnny = 'loaded';
   function getBiaState() {
     try {
       if (typeof productionState === 'object' && productionState) return productionState;
-    } catch (err) {}
+    } catch (err) { biaReportError('getBiaState', err); }
 
     try {
       return JSON.parse(localStorage.getItem('bia-production-state') || '{}');
@@ -7277,7 +7393,7 @@ window.testJohnny = 'loaded';
       if (typeof productionState === 'object' && productionState) {
         Object.assign(productionState, state);
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('saveBiaState', err); }
 
     try {
       localStorage.setItem('bia-production-state', JSON.stringify(state));
@@ -7327,9 +7443,9 @@ window.testJohnny = 'loaded';
     const state = getBiaState();
     const values = [];
 
-    try { values.push(latestGeneratedScript); } catch (err) {}
+    try { values.push(latestGeneratedScript); } catch (err) { biaReportError('currentScriptText', err); }
     values.push(state.script);
-    try { values.push(importedVoiceoverText); } catch (err) {}
+    try { values.push(importedVoiceoverText); } catch (err) { biaReportError('currentScriptText', err); }
 
     ['scriptInput', 'scriptOutput'].forEach(function (id) {
       const el = document.getElementById(id);
@@ -7373,9 +7489,9 @@ window.testJohnny = 'loaded';
   function getSubtitleText() {
     const state = getBiaState();
     const values = [];
-    try { values.push(window.generatedSubtitleText); } catch (err) {}
+    try { values.push(window.generatedSubtitleText); } catch (err) { biaReportError('getSubtitleText', err); }
     values.push(state.subtitles);
-    try { values.push(latestGeneratedSubtitles); } catch (err) {}
+    try { values.push(latestGeneratedSubtitles); } catch (err) { biaReportError('getSubtitleText', err); }
 
     return (values.find(function (v) {
       return v && String(v).trim();
@@ -7398,8 +7514,8 @@ window.testJohnny = 'loaded';
         return;
       }
 
-      try { latestGeneratedScript = script; } catch (err) {}
-      try { latestGeneratedSubtitles = subtitles; } catch (err) {}
+      try { latestGeneratedScript = script; } catch (err) { biaReportError('runStableSubtitles', err); }
+      try { latestGeneratedSubtitles = subtitles; } catch (err) { biaReportError('runStableSubtitles', err); }
       window.generatedSubtitleText = subtitles;
 
       saveBiaState({ script: script, subtitles: subtitles });
@@ -7619,22 +7735,22 @@ document.addEventListener('keydown', function (event) {
         if (window.biaDirectVideoOps && typeof window.biaDirectVideoOps.clearSession === 'function') {
           return window.biaDirectVideoOps.clearSession();
         }
-        try { localStorage.removeItem('bia-production-state'); } catch (err) {}
+        try { localStorage.removeItem('bia-production-state'); } catch (err) { biaReportError('clearSessionBtn', err); }
         try {
           if (typeof productionState === 'object' && productionState) {
             productionState.topic = ''; productionState.niche = ''; productionState.script = '';
             productionState.subtitles = ''; productionState.imageSync = ''; productionState.capcutTiming = '';
             productionState.stepTimestamps = {}; productionState.lastUpdated = null;
           }
-        } catch (err) {}
-        try { window.generatedSubtitleText = ''; window.latestGeneratedScript = ''; } catch (err) {}
+        } catch (err) { biaReportError('clearSessionBtn', err); }
+        try { window.generatedSubtitleText = ''; window.latestGeneratedScript = ''; } catch (err) { biaReportError('clearSessionBtn', err); }
         var out = document.getElementById('productionOutput');
         if (out) out.innerHTML = '<div class="output-placeholder">Session cleared. Generate topics to begin again.</div>';
         if (typeof showNotification === 'function') showNotification('Session cleared.');
       },
       resumeSessionBtn: function () {
-        try { if (typeof loadProductionState === 'function') loadProductionState(); } catch (err) {}
-        try { if (typeof renderControlPanel === 'function') renderControlPanel(); } catch (err) {}
+        try { if (typeof loadProductionState === 'function') loadProductionState(); } catch (err) { biaReportError('resumeSessionBtn', err); }
+        try { if (typeof renderControlPanel === 'function') renderControlPanel(); } catch (err) { biaReportError('resumeSessionBtn', err); }
         if (typeof showNotification === 'function') showNotification('Session resumed.');
       }
     };
@@ -7827,7 +7943,7 @@ document.addEventListener('keydown', function (event) {
     try {
       var state = JSON.parse(localStorage.getItem('bia-production-state') || '{}');
       candidates.unshift(state.script);
-    } catch (err) {}
+    } catch (err) { biaReportError('readScript', err); }
 
     for (var i = 0; i < candidates.length; i += 1) {
       var text = String(candidates[i] || '').trim();
@@ -7942,7 +8058,7 @@ document.addEventListener('keydown', function (event) {
     try {
       var state = JSON.parse(localStorage.getItem('bia-production-state') || '{}');
       subtitles = subtitles || state.subtitles || '';
-    } catch (err) {}
+    } catch (err) { biaReportError('directImagePlan', err); }
 
     if (!subtitles.trim()) {
       notify('No subtitles found. Generate subtitles first.');
@@ -7966,7 +8082,7 @@ document.addEventListener('keydown', function (event) {
     try {
       var state = JSON.parse(localStorage.getItem('bia-production-state') || '{}');
       subtitles = subtitles || state.subtitles || '';
-    } catch (err) {}
+    } catch (err) { biaReportError('directCapCutTiming', err); }
 
     if (!subtitles.trim()) {
       notify('No subtitles found. Generate subtitles first.');
@@ -8058,7 +8174,7 @@ document.addEventListener('keydown', function (event) {
   }
 
   function setProcess(label) {
-    try { if (typeof window.setActiveProcess === 'function') window.setActiveProcess(label); } catch (err) {}
+    try { if (typeof window.setActiveProcess === 'function') window.setActiveProcess(label); } catch (err) { biaReportError('setProcess', err); }
   }
 
   function getStoredState() {
@@ -8085,7 +8201,7 @@ document.addEventListener('keydown', function (event) {
 
     state.lastUpdated = now;
 
-    try { localStorage.setItem('bia-production-state', JSON.stringify(state)); } catch (err) {}
+    try { localStorage.setItem('bia-production-state', JSON.stringify(state)); } catch (err) { biaReportError('saveState', err); }
 
     try {
       if (typeof productionState === 'object' && productionState) {
@@ -8096,7 +8212,7 @@ document.addEventListener('keydown', function (event) {
         Object.assign(productionState, updates, { lastUpdated: now });
         Object.assign(productionState.stepTimestamps, state.stepTimestamps);
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('saveState', err); }
 
     try {
       if (typeof window.updatePipelineProgressTracker === 'function') {
@@ -8104,7 +8220,7 @@ document.addEventListener('keydown', function (event) {
       } else if (typeof updatePipelineProgressTracker === 'function') {
         updatePipelineProgressTracker();
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('saveState', err); }
   }
 
   function ensureProductionOutput() {
@@ -8211,7 +8327,7 @@ document.addEventListener('keydown', function (event) {
       if (typeof window.recordCommandHistory === 'function') {
         window.recordCommandHistory({ command: 'generate-script', label: 'Generate Script', source: 'final-videoops-lock', status: 'completed', timestamp: new Date().toISOString() });
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('finalGenerateScript', err); }
 
     notify('Script generated!');
     setProcess('SYSTEM IDLE');
@@ -8259,7 +8375,7 @@ document.addEventListener('keydown', function (event) {
       if (typeof window.recordCommandHistory === 'function') {
         window.recordCommandHistory({ command: 'generate-subtitles', label: 'Generate Subtitles', source: 'final-videoops-lock', status: 'completed', timestamp: new Date().toISOString() });
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('finalSubtitles', err); }
 
     notify('Subtitles generated!');
     setProcess('SYSTEM IDLE');
@@ -8373,7 +8489,7 @@ document.addEventListener('keydown', function (event) {
         if (typeof window.recordCommandHistory === 'function') {
           window.recordCommandHistory({ command: 'run-full-pipeline', label: 'Run Full Pipeline', source: 'final-videoops-lock', status: 'completed', timestamp: new Date().toISOString() });
         }
-      } catch (err) {}
+      } catch (err) { biaReportError('finalRunFullPipeline', err); }
 
       notify('Full pipeline complete!');
     } catch (err) {
@@ -8385,8 +8501,8 @@ document.addEventListener('keydown', function (event) {
   }
 
   function clearSession() {
-    try { localStorage.removeItem('bia-production-state'); } catch (err) {}
-    try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) {}
+    try { localStorage.removeItem('bia-production-state'); } catch (err) { biaReportError('clearSession', err); }
+    try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) { biaReportError('clearSession', err); }
 
     try {
       if (typeof productionState === 'object' && productionState) {
@@ -8399,7 +8515,7 @@ document.addEventListener('keydown', function (event) {
         productionState.stepTimestamps = {};
         productionState.lastUpdated = null;
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('clearSession', err); }
 
     window.latestGeneratedScript = '';
     window.generatedSubtitleText = '';
@@ -8415,9 +8531,9 @@ document.addEventListener('keydown', function (event) {
 
     persistentWrite('Session Cleared', 'Session cleared. Generate topics to begin again.');
 
-    try { if (typeof renderControlPanel === 'function') renderControlPanel(); } catch (err) {}
-    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) {}
-    try { if (typeof renderPipelineProgressTracker === 'function') renderPipelineProgressTracker(); } catch (err) {}
+    try { if (typeof renderControlPanel === 'function') renderControlPanel(); } catch (err) { biaReportError('clearSession', err); }
+    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('clearSession', err); }
+    try { if (typeof renderPipelineProgressTracker === 'function') renderPipelineProgressTracker(); } catch (err) { biaReportError('clearSession', err); }
 
     notify('Session cleared.');
   }
@@ -8484,10 +8600,12 @@ document.addEventListener('keydown', function (event) {
       __biaActionResult = map[action]();
       Promise.resolve(__biaActionResult).then(function () {
         if (typeof window.biaStatusActionComplete === 'function') window.biaStatusActionComplete(action);
-      }).catch(function () {
+      }).catch(function (err) {
+        biaReportError('controlPanelAction:' + action, err, { notify: 'Action failed. Check console.' });
         if (typeof window.biaStatusActionError === 'function') window.biaStatusActionError(action);
       });
     } catch (__biaActionError) {
+      biaReportError('controlPanelAction:' + action, __biaActionError, { notify: 'Action failed. Check console.' });
       if (typeof window.biaStatusActionError === 'function') window.biaStatusActionError(action);
       throw __biaActionError;
     }
@@ -8664,7 +8782,7 @@ document.addEventListener('keydown', function (event) {
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { biaReportError('saveJson', err); }
   }
 
   function notify(message) {
@@ -8735,7 +8853,7 @@ document.addEventListener('keydown', function (event) {
 
     try {
       if (typeof window.updateModuleStatus === 'function') window.updateModuleStatus(moduleKey, status);
-    } catch (err) {}
+    } catch (err) { biaReportError('setModuleStatusSafe', err); }
 
     renderMorningUpgrade();
   }
@@ -8763,7 +8881,7 @@ document.addEventListener('keydown', function (event) {
   }
 
   function setQueueRunning(value) {
-    try { localStorage.setItem(QUEUE_RUNNING_KEY, value ? 'true' : 'false'); } catch (err) {}
+    try { localStorage.setItem(QUEUE_RUNNING_KEY, value ? 'true' : 'false'); } catch (err) { biaReportError('setQueueRunning', err); }
   }
 
   function isQueueRunning() {
@@ -8986,7 +9104,7 @@ document.addEventListener('keydown', function (event) {
           status: 'completed',
           timestamp: new Date().toISOString()
         });
-      } catch (err) {}
+      } catch (err) { biaReportError('executeQueueItem', err); }
     }
   }
 
@@ -9316,7 +9434,7 @@ if (document.readyState === 'loading') {
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { biaReportError('saveJson', err); }
   }
 
   function escapeHtml(value) {
@@ -9418,8 +9536,8 @@ if (document.readyState === 'loading') {
   }
 
   function clearSessionEverywhere() {
-    try { localStorage.removeItem('bia-production-state'); } catch (err) {}
-    try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) {}
+    try { localStorage.removeItem('bia-production-state'); } catch (err) { biaReportError('clearSessionEverywhere', err); }
+    try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) { biaReportError('clearSessionEverywhere', err); }
 
     try {
       if (typeof productionState === 'object' && productionState) {
@@ -9432,7 +9550,7 @@ if (document.readyState === 'loading') {
         productionState.stepTimestamps = {};
         productionState.lastUpdated = null;
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('clearSessionEverywhere', err); }
 
     window.latestGeneratedScript = '';
     window.generatedSubtitleText = '';
@@ -9449,8 +9567,8 @@ if (document.readyState === 'loading') {
 
     writeProductionReport('Session Cleared', 'Session cleared. Generate topics to begin again.');
 
-    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) {}
-    try { if (typeof window.renderPipelineProgressTracker === 'function') window.renderPipelineProgressTracker(); } catch (err) {}
+    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('clearSessionEverywhere', err); }
+    try { if (typeof window.renderPipelineProgressTracker === 'function') window.renderPipelineProgressTracker(); } catch (err) { biaReportError('clearSessionEverywhere', err); }
 
     notify('Session cleared.');
   }
@@ -9633,7 +9751,7 @@ if (document.readyState === 'loading') {
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { biaReportError('saveJson', err); }
   }
 
   function escapeHtml(value) {
@@ -9678,7 +9796,7 @@ if (document.readyState === 'loading') {
   function saveQueue(queue) {
     saveJson(QUEUE_KEY, queue);
     if (typeof window.biaRenderMorningUpgrade === 'function') {
-      try { window.biaRenderMorningUpgrade(); } catch (err) {}
+      try { window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('saveQueue', err); }
     }
     renderHealthAndSmartQueueSoon();
   }
@@ -10010,7 +10128,7 @@ if (document.readyState === 'loading') {
   }
 
   function saveJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { biaReportError('saveJson', err); }
   }
 
   function notify(message) {
@@ -10025,14 +10143,14 @@ if (document.readyState === 'loading') {
 
   function saveQueue(queue) {
     saveJson(QUEUE_KEY, Array.isArray(queue) ? queue : []);
-    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) {}
-    try { if (typeof window.biaRenderProductionHealth === 'function') window.biaRenderProductionHealth(); } catch (err) {}
+    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('saveQueue', err); }
+    try { if (typeof window.biaRenderProductionHealth === 'function') window.biaRenderProductionHealth(); } catch (err) { biaReportError('saveQueue', err); }
   }
 
   function setQueueRunning(value) {
-    try { localStorage.setItem(QUEUE_RUNNING_KEY, value ? 'true' : 'false'); } catch (err) {}
-    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) {}
-    try { if (typeof window.biaRenderProductionHealth === 'function') window.biaRenderProductionHealth(); } catch (err) {}
+    try { localStorage.setItem(QUEUE_RUNNING_KEY, value ? 'true' : 'false'); } catch (err) { biaReportError('setQueueRunning', err); }
+    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('setQueueRunning', err); }
+    try { if (typeof window.biaRenderProductionHealth === 'function') window.biaRenderProductionHealth(); } catch (err) { biaReportError('setQueueRunning', err); }
   }
 
   function readProductionState() {
@@ -10041,7 +10159,7 @@ if (document.readyState === 'loading') {
       if (typeof productionState === 'object' && productionState) {
         return Object.assign({}, stored, productionState);
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('readProductionState', err); }
     return stored || {};
   }
 
@@ -10075,7 +10193,7 @@ if (document.readyState === 'loading') {
   }
 
   function setModule(moduleKey, status) {
-    try { if (typeof window.updateModuleStatus === 'function') window.updateModuleStatus(moduleKey, status); } catch (err) {}
+    try { if (typeof window.updateModuleStatus === 'function') window.updateModuleStatus(moduleKey, status); } catch (err) { biaReportError('setModule', err); }
   }
 
   function completeModuleSoon(moduleKey) {
@@ -10238,7 +10356,7 @@ if (document.readyState === 'loading') {
           timestamp: new Date().toISOString()
         });
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('executeStreamingItem', err); }
   }
 
   async function startStreamingQueue() {
@@ -10290,8 +10408,8 @@ if (document.readyState === 'loading') {
     } finally {
       queueWorkerActive = false;
       setQueueRunning(false);
-      try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) {}
-      try { if (typeof window.biaRenderProductionHealth === 'function') window.biaRenderProductionHealth(); } catch (err) {}
+      try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('startStreamingQueue', err); }
+      try { if (typeof window.biaRenderProductionHealth === 'function') window.biaRenderProductionHealth(); } catch (err) { biaReportError('startStreamingQueue', err); }
     }
   }
 
@@ -12565,10 +12683,10 @@ pre.production-output {
         }, 0);
         pipeline = done / keys.length;
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('updateDockFallback', err); }
 
     var queueLoad = 0;
-    try { queueLoad = Array.isArray(commandQueue) ? Math.min(1, commandQueue.length / 8) : 0; } catch (err) {}
+    try { queueLoad = Array.isArray(commandQueue) ? Math.min(1, commandQueue.length / 8) : 0; } catch (err) { biaReportError('updateDockFallback', err); }
 
     function setGauge(id, value) {
       var el = document.getElementById(id);
@@ -12992,7 +13110,7 @@ pre.production-output {
     try {
       if (typeof window.updateQueueGauge === 'function') window.updateQueueGauge();
       if (typeof window.updateTelemetryCluster === 'function') window.updateTelemetryCluster();
-    } catch (e) {}
+    } catch (e) { biaReportError('updateGaugeFromQueue', e); }
   }
 
   function pushQueueItem(label, command) {
@@ -13008,11 +13126,11 @@ pre.production-output {
     });
 
     if (typeof saveCommandQueue === 'function') {
-      try { saveCommandQueue(); } catch (e) {}
+      try { saveCommandQueue(); } catch (e) { biaReportError('pushQueueItem', e); }
     }
 
     if (typeof addActivity === 'function') {
-      try { addActivity('Queued: ' + label); } catch (e) {}
+      try { addActivity('Queued: ' + label); } catch (e) { biaReportError('pushQueueItem', e); }
     }
 
     window.renderVisibleQueueDock();
@@ -13064,7 +13182,7 @@ pre.production-output {
         window.commandQueue = [];
         if (typeof commandQueue !== 'undefined') commandQueue = [];
         if (typeof saveCommandQueue === 'function') {
-          try { saveCommandQueue(); } catch (e) {}
+          try { saveCommandQueue(); } catch (e) { biaReportError('bindQueueDock', e); }
         }
         window.renderVisibleQueueDock();
         updateGaugeFromQueue();
@@ -13110,14 +13228,14 @@ pre.production-output {
     try {
       if (Array.isArray(window.commandQueue)) return window.commandQueue;
       if (typeof commandQueue !== 'undefined' && Array.isArray(commandQueue)) return commandQueue;
-    } catch (e) {}
+    } catch (e) { biaReportError('getQueue', e); }
     window.commandQueue = [];
     return window.commandQueue;
   }
 
   function setQueue(next) {
     window.commandQueue = Array.isArray(next) ? next : [];
-    try { if (typeof commandQueue !== 'undefined') commandQueue = window.commandQueue; } catch (e) {}
+    try { if (typeof commandQueue !== 'undefined') commandQueue = window.commandQueue; } catch (e) { biaReportError('setQueue', e); }
   }
 
   function htmlEscape(value) {
@@ -13156,13 +13274,13 @@ pre.production-output {
   };
 
   function refreshTelemetry() {
-    try { if (typeof window.updateQueueGauge === 'function') window.updateQueueGauge(); } catch (e) {}
-    try { if (typeof window.updateTelemetryCluster === 'function') window.updateTelemetryCluster(); } catch (e) {}
-    try { if (typeof updateQueueGauge === 'function') updateQueueGauge(); } catch (e) {}
+    try { if (typeof window.updateQueueGauge === 'function') window.updateQueueGauge(); } catch (e) { biaReportError('refreshTelemetry', e); }
+    try { if (typeof window.updateTelemetryCluster === 'function') window.updateTelemetryCluster(); } catch (e) { biaReportError('refreshTelemetry', e); }
+    try { if (typeof updateQueueGauge === 'function') updateQueueGauge(); } catch (e) { biaReportError('refreshTelemetry', e); }
   }
 
   function saveQueueMaybe() {
-    try { if (typeof saveCommandQueue === 'function') saveCommandQueue(); } catch (e) {}
+    try { if (typeof saveCommandQueue === 'function') saveCommandQueue(); } catch (e) { biaReportError('saveQueueMaybe', e); }
   }
 
   function addQueue(label, command) {
@@ -13178,7 +13296,7 @@ pre.production-output {
     saveQueueMaybe();
     window.renderFixedQueueDock();
     refreshTelemetry();
-    try { if (typeof showNotification === 'function') showNotification('Queued: ' + label); } catch (e) {}
+    try { if (typeof showNotification === 'function') showNotification('Queued: ' + label); } catch (e) { biaReportError('addQueue', e); }
   }
 
   function bindFixedQueueDock() {
@@ -13216,7 +13334,7 @@ pre.production-output {
       startBtn.addEventListener('click', function () {
         const queue = getQueue();
         if (!queue.length) {
-          try { if (typeof showNotification === 'function') showNotification('No queued commands to run.'); } catch (e) {}
+          try { if (typeof showNotification === 'function') showNotification('No queued commands to run.'); } catch (e) { biaReportError('bindFixedQueueDock', e); }
           return;
         }
         queue.forEach(function (item) { item.status = 'completed'; });
@@ -13224,7 +13342,7 @@ pre.production-output {
         saveQueueMaybe();
         window.renderFixedQueueDock();
         refreshTelemetry();
-        try { if (typeof showNotification === 'function') showNotification('Queue processed.'); } catch (e) {}
+        try { if (typeof showNotification === 'function') showNotification('Queue processed.'); } catch (e) { biaReportError('bindFixedQueueDock', e); }
       });
     }
     if (clearBtn && !clearBtn.dataset.bound) {
@@ -13234,7 +13352,7 @@ pre.production-output {
         saveQueueMaybe();
         window.renderFixedQueueDock();
         refreshTelemetry();
-        try { if (typeof showNotification === 'function') showNotification('Queue cleared.'); } catch (e) {}
+        try { if (typeof showNotification === 'function') showNotification('Queue cleared.'); } catch (e) { biaReportError('bindFixedQueueDock', e); }
       });
     }
 
@@ -13244,7 +13362,7 @@ pre.production-output {
 
   document.addEventListener('DOMContentLoaded', bindFixedQueueDock);
   setTimeout(bindFixedQueueDock, 250);
-  setTimeout(function () { try { window.renderFixedQueueDock(); } catch (e) {} }, 1000);
+  setTimeout(function () { try { window.renderFixedQueueDock(); } catch (e) { biaReportError('bindFixedQueueDock', e); } }, 1000);
 })();
 </script>
 
@@ -13823,7 +13941,7 @@ pre.production-output {
   }
 
   function writeJson(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { biaReportError('writeJson', err); }
   }
 
   function defaultModules(status) {
@@ -13850,7 +13968,7 @@ pre.production-output {
         modules[moduleKey].status = status;
         modules[moduleKey].updatedAt = new Date().toISOString();
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('updateGlobalModuleObject', err); }
   }
 
   function saveModuleStatus(moduleKey, status) {
@@ -13891,7 +14009,7 @@ pre.production-output {
     if (!moduleKey) return;
     saveModuleStatus(moduleKey, status);
     applyModuleStatusesToDom();
-    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) {}
+    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('setModuleStatusVisible', err); }
     setTimeout(applyModuleStatusesToDom, 0);
   }
 
@@ -13935,32 +14053,32 @@ pre.production-output {
   window.updateModuleStatus = function (moduleKey, status) {
     saveModuleStatus(moduleKey, status || 'ready');
     if (typeof previousUpdateModuleStatus === 'function') {
-      try { previousUpdateModuleStatus(moduleKey, status); } catch (err) {}
+      try { previousUpdateModuleStatus(moduleKey, status); } catch (err) { biaReportError('updateModuleStatus', err); }
     }
     setTimeout(applyModuleStatusesToDom, 0);
   };
 
   function clearCommandHistoryState() {
-    try { localStorage.removeItem(COMMAND_HISTORY_KEY); } catch (err) {}
+    try { localStorage.removeItem(COMMAND_HISTORY_KEY); } catch (err) { biaReportError('clearCommandHistoryState', err); }
     try {
       if (typeof commandHistory !== 'undefined' && Array.isArray(commandHistory)) commandHistory.length = 0;
-    } catch (err) {}
+    } catch (err) { biaReportError('clearCommandHistoryState', err); }
     window.commandHistory = [];
-    try { if (typeof renderCommandHistory === 'function') renderCommandHistory(); } catch (err) {}
+    try { if (typeof renderCommandHistory === 'function') renderCommandHistory(); } catch (err) { biaReportError('clearCommandHistoryState', err); }
   }
 
   function clearQueueState() {
-    try { localStorage.removeItem(QUEUE_KEY); } catch (err) {}
-    try { localStorage.setItem(QUEUE_RUNNING_KEY, 'false'); } catch (err) {}
+    try { localStorage.removeItem(QUEUE_KEY); } catch (err) { biaReportError('clearQueueState', err); }
+    try { localStorage.setItem(QUEUE_RUNNING_KEY, 'false'); } catch (err) { biaReportError('clearQueueState', err); }
     try {
       if (typeof commandQueue !== 'undefined' && Array.isArray(commandQueue)) commandQueue.length = 0;
-    } catch (err) {}
+    } catch (err) { biaReportError('clearQueueState', err); }
   }
 
   function clearProductionStateObjects() {
-    try { localStorage.removeItem('bia-production-state'); } catch (err) {}
-    try { localStorage.removeItem('bia-pipeline-timestamps'); } catch (err) {}
-    try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) {}
+    try { localStorage.removeItem('bia-production-state'); } catch (err) { biaReportError('clearProductionStateObjects', err); }
+    try { localStorage.removeItem('bia-pipeline-timestamps'); } catch (err) { biaReportError('clearProductionStateObjects', err); }
+    try { localStorage.removeItem('biaPipelineTimestamps'); } catch (err) { biaReportError('clearProductionStateObjects', err); }
 
     try {
       if (typeof productionState === 'object' && productionState) {
@@ -13973,7 +14091,7 @@ pre.production-output {
         productionState.lastUpdated = null;
         productionState.stepTimestamps = {};
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('clearProductionStateObjects', err); }
 
     try {
       if (typeof pipelineTimestamps === 'object' && pipelineTimestamps) {
@@ -13981,7 +14099,7 @@ pre.production-output {
         pipelineTimestamps.lastCompleted = null;
         pipelineTimestamps.history = [];
       }
-    } catch (err) {}
+    } catch (err) { biaReportError('clearProductionStateObjects', err); }
 
     window.latestGeneratedScript = '';
     window.generatedSubtitleText = '';
@@ -13999,8 +14117,8 @@ pre.production-output {
     var output = document.getElementById('productionOutput');
     if (output) output.innerHTML = '<div class="output-placeholder">Session cleared. Generate topics to begin again.</div>';
 
-    try { if (typeof setConsoleStatus === 'function') setConsoleStatus('ready'); } catch (err) {}
-    try { if (typeof updateActiveProcessBanner === 'function') updateActiveProcessBanner('SYSTEM IDLE'); } catch (err) {}
+    try { if (typeof setConsoleStatus === 'function') setConsoleStatus('ready'); } catch (err) { biaReportError('resetInputsAndOutput', err); }
+    try { if (typeof updateActiveProcessBanner === 'function') updateActiveProcessBanner('SYSTEM IDLE'); } catch (err) { biaReportError('resetInputsAndOutput', err); }
   }
 
   window.biaClearAllOperationalState = function () {
@@ -14011,11 +14129,11 @@ pre.production-output {
     Object.keys(moduleNames).forEach(function (key) { updateGlobalModuleObject(key, 'ready'); });
     resetInputsAndOutput();
 
-    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) {}
-    try { if (typeof refreshControlPanel === 'function') refreshControlPanel(); } catch (err) {}
-    try { if (typeof renderControlPanel === 'function') renderControlPanel(); } catch (err) {}
+    try { if (typeof window.biaRenderMorningUpgrade === 'function') window.biaRenderMorningUpgrade(); } catch (err) { biaReportError('biaClearAllOperationalState', err); }
+    try { if (typeof refreshControlPanel === 'function') refreshControlPanel(); } catch (err) { biaReportError('biaClearAllOperationalState', err); }
+    try { if (typeof renderControlPanel === 'function') renderControlPanel(); } catch (err) { biaReportError('biaClearAllOperationalState', err); }
     setTimeout(applyModuleStatusesToDom, 0);
-    setTimeout(function () { try { if (typeof renderCommandHistory === 'function') renderCommandHistory(); } catch (err) {} }, 0);
+    setTimeout(function () { try { if (typeof renderCommandHistory === 'function') renderCommandHistory(); } catch (err) { biaReportError('biaClearAllOperationalState', err); } }, 0);
 
     notify('All production state cleared.');
   };
@@ -14579,7 +14697,7 @@ pre.production-output {
     try {
       if (Array.isArray(window[name])) return window[name];
       if (typeof eval(name) !== 'undefined' && Array.isArray(eval(name))) return eval(name);
-    } catch (err) {}
+    } catch (err) { biaReportError('safeArray', err); }
     return [];
   }
 
@@ -14587,7 +14705,7 @@ pre.production-output {
     try {
       if (window[name] && typeof window[name] === 'object') return window[name];
       if (typeof eval(name) !== 'undefined' && eval(name) && typeof eval(name) === 'object') return eval(name);
-    } catch (err) {}
+    } catch (err) { biaReportError('safeObject', err); }
     return {};
   }
 
@@ -14634,7 +14752,7 @@ pre.production-output {
     var pipe = safeObject('pipelineTimestamps');
     if (pipe && pipe.currentProcess) return true;
     var text = '';
-    try { text = (document.getElementById('activeProcessBanner') || {}).textContent || ''; } catch (err) {}
+    try { text = (document.getElementById('activeProcessBanner') || {}).textContent || ''; } catch (err) { biaReportError('isWorking', err); }
     return /running|working|generating|processing/i.test(text);
   }
 
@@ -14966,7 +15084,7 @@ pre.production-output {
     try {
       var stored = Number(localStorage.getItem('bia_completed_jobs_' + today) || '0') || 0;
       count = Math.max(count, stored);
-    } catch (err) {}
+    } catch (err) { biaReportError('completedJobsToday', err); }
 
     return count;
   }
@@ -14976,7 +15094,7 @@ pre.production-output {
     try {
       var current = Number(localStorage.getItem(key) || '0') || 0;
       localStorage.setItem(key, String(current + 1));
-    } catch (err) {}
+    } catch (err) { biaReportError('rememberCompletion', err); }
     state.doneUntil = now() + 2600;
     updateInstrumentation();
   }
@@ -15109,7 +15227,7 @@ pre.production-output {
     var originalFetch = window.fetch;
     var wrappedFetch = function () {
       var url = '';
-      try { url = String(arguments[0] && (arguments[0].url || arguments[0])); } catch (err) {}
+      try { url = String(arguments[0] && (arguments[0].url || arguments[0])); } catch (err) { biaReportError('wrappedFetch', err); }
       var isAi = /api\.openai\.com|api\.elevenlabs\.io/i.test(url);
 
       if (isAi) {
@@ -15241,7 +15359,7 @@ pre.production-output {
     try {
       if (Array.isArray(window.commandQueue)) return window.commandQueue;
       if (typeof commandQueue !== 'undefined' && Array.isArray(commandQueue)) return commandQueue;
-    } catch (err) {}
+    } catch (err) { biaReportError('getQueue', err); }
     window.commandQueue = [];
     return window.commandQueue;
   }
@@ -15250,7 +15368,7 @@ pre.production-output {
     window.commandQueue = Array.isArray(nextQueue) ? nextQueue : [];
     try {
       if (typeof commandQueue !== 'undefined') commandQueue = window.commandQueue;
-    } catch (err) {}
+    } catch (err) { biaReportError('setQueue', err); }
   }
 
   function ensureFixedQueueDock() {
@@ -15284,7 +15402,7 @@ pre.production-output {
 
   function htmlEscape(value) {
     if (typeof window.escapeHtml === 'function') {
-      try { return window.escapeHtml(value); } catch (err) {}
+      try { return window.escapeHtml(value); } catch (err) { biaReportError('htmlEscape', err); }
     }
     var div = document.createElement('div');
     div.textContent = safeText(value);
@@ -15319,7 +15437,7 @@ pre.production-output {
     callSafe(window.saveCommandQueue);
     try {
       localStorage.setItem('bia-command-queue', JSON.stringify(getQueue()));
-    } catch (err) {}
+    } catch (err) { biaReportError('saveQueueMaybe', err); }
   }
 
   function addQueueItem(label, command) {
@@ -15444,7 +15562,7 @@ pre.production-output {
             window.productionState.topic = value;
             window.productionState.lastUpdated = new Date().toISOString();
           }
-        } catch (err) {}
+        } catch (err) { biaReportError('bindTopicSync', err); }
       });
     });
   }
